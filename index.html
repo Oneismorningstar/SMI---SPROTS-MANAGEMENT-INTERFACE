@@ -306,24 +306,46 @@
         const sharedVenues = ["Statue Ground", "Stage Ground"];
         const MIN_PLAYERS = 3;   // players needed for a team to be "Ready"
 
-        const defaultTeams = [
-            { name: "Last Time Legends", sport: "Cricket",  played: 2, wins: 2, losses: 0 },
-            { name: "Super Strikers",    sport: "Cricket",  played: 2, wins: 0, losses: 2 },
-            { name: "Titans FC",         sport: "Football", played: 2, wins: 1, losses: 1 },
-            { name: "Red Hawks",         sport: "Football", played: 2, wins: 1, losses: 1 },
-            { name: "Court Kings",       sport: "Basketball", played: 0, wins: 0, losses: 0 },
-            { name: "Hoop Dreams",       sport: "Basketball", played: 0, wins: 0, losses: 0 },
-            { name: "Paddle Pros",       sport: "Table Tennis", played: 0, wins: 0, losses: 0 },
-            { name: "Spin Masters",      sport: "Table Tennis", played: 0, wins: 0, losses: 0 }
-        ];
+        // The data now lives on the SERVER. These two lists are just a copy used to show things on screen.
+        let teams = [];
+        let players = [];
 
-        // Load saved data from the browser (so data stays after refresh)
-        let teams   = JSON.parse(localStorage.getItem("smiTeams"))   || defaultTeams;
-        let players = JSON.parse(localStorage.getItem("smiPlayers")) || [];
+        // Talks to the backend (server.js). Example: api("GET", "/api/data")
+        async function api(method, url, body) {
+            const options = {
+                method: method,
+                headers: { "Content-Type": "application/json", "x-token": sessionStorage.getItem("smiToken") || "" }
+            };
+            if (body) options.body = JSON.stringify(body);
 
-        function saveData() {
-            localStorage.setItem("smiTeams", JSON.stringify(teams));
-            localStorage.setItem("smiPlayers", JSON.stringify(players));
+            try {
+                const response = await fetch(url, options);
+                const data = await response.json();
+
+                if (response.status === 401) {
+                    alert("Admin session expired. Please log in again.");
+                    logout();
+                    return null;
+                }
+                if (!response.ok) {
+                    alert(data.error || "Something went wrong!");
+                    return null;
+                }
+                return data;
+            } catch (error) {
+                alert("Cannot reach the server. Is it running?");
+                return null;
+            }
+        }
+
+        // Ask the server for the latest players and teams, then show them
+        async function loadData() {
+            const data = await api("GET", "/api/data");
+            if (data) {
+                teams = data.teams;
+                players = data.players;
+            }
+            renderAll();
         }
 
         // Stops users from typing HTML into the page
@@ -339,6 +361,7 @@
             document.querySelectorAll("nav button").forEach(btn => btn.classList.remove("active"));
             document.getElementById(sectionId).classList.add("active");
             document.getElementById("btn-" + sectionId).classList.add("active");
+            loadData();   // get the latest data from the server
         }
 
         // ---------- 3. Fill dropdowns ----------
@@ -360,7 +383,7 @@
         }
 
         // ---------- 4. Players ----------
-        function addPlayer() {
+        async function addPlayer() {
             const name   = document.getElementById("playerName").value.trim();
             const enroll = document.getElementById("playerEnroll").value.trim();
             const sport  = document.getElementById("playerSport").value;
@@ -370,27 +393,24 @@
                 alert("Please enter your name and enrollment number!");
                 return;
             }
-            if (players.some(p => p.enroll.toLowerCase() === enroll.toLowerCase())) {
-                alert("This enrollment number is already registered!");
-                return;
-            }
 
-            players.push({ name: name, enroll: enroll, sport: sport, team: team });
+            // Send the new player to the server (the server also checks for duplicates)
+            const result = await api("POST", "/api/players", { name: name, enroll: enroll, sport: sport, team: team });
+            if (!result) return;
+
             document.getElementById("playerName").value = "";
             document.getElementById("playerEnroll").value = "";
-            saveData();
-            renderAll();
+            loadData();
         }
 
-        function removePlayer(index) {
+        async function removePlayer(id) {
             if (!isAdmin()) return;   // only the admin can do this
-            players.splice(index, 1);
-            saveData();
-            renderAll();
+            await api("DELETE", "/api/players/" + id);
+            loadData();
         }
 
         // ---------- 5. Teams ----------
-        function addTeam() {
+        async function addTeam() {
             const name  = document.getElementById("teamName").value.trim();
             const sport = document.getElementById("teamSport").value;
 
@@ -398,25 +418,18 @@
                 alert("Please enter a team name!");
                 return;
             }
-            if (teams.some(t => t.name.toLowerCase() === name.toLowerCase())) {
-                alert("A team with this name already exists!");
-                return;
-            }
 
-            teams.push({ name: name, sport: sport, played: 0, wins: 0, losses: 0 });
+            const result = await api("POST", "/api/teams", { name: name, sport: sport });
+            if (!result) return;
+
             document.getElementById("teamName").value = "";
-            saveData();
-            renderAll();
+            loadData();
         }
 
-        function removeTeam(index) {
+        async function removeTeam(id) {
             if (!isAdmin()) return;   // only the admin can do this
-            const teamName = teams[index].name;
-            // Players of this team become "no team"
-            players.forEach(p => { if (p.team === teamName) p.team = ""; });
-            teams.splice(index, 1);
-            saveData();
-            renderAll();
+            await api("DELETE", "/api/teams/" + id);
+            loadData();
         }
 
         function countPlayers(teamName) {
@@ -424,13 +437,10 @@
         }
 
         // ---------- 6. Scoreboard ----------
-        function recordResult(index, result) {
+        async function recordResult(id, result) {
             if (!isAdmin()) return;   // only the admin can do this
-            teams[index].played += 1;
-            if (result === "win") teams[index].wins += 1;
-            else teams[index].losses += 1;
-            saveData();
-            renderAll();
+            await api("POST", "/api/teams/" + id + "/result", { result: result });
+            loadData();
         }
 
         // ---------- 7. Show everything on screen ----------
@@ -453,7 +463,7 @@
                         <td>${clean(p.enroll)}</td>
                         <td>${p.sport}</td>
                         <td>${p.team ? clean(p.team) : "—"}</td>
-                        <td class="admin-only"><button class="btn btn-red btn-small" onclick="removePlayer(${i})">Remove</button></td>
+                        <td class="admin-only"><button class="btn btn-red btn-small" onclick="removePlayer(${p.id})">Remove</button></td>
                     </tr>`;
             });
             if (playerRows === "") playerRows = `<tr><td colspan="6" class="empty">No players registered yet.</td></tr>`;
@@ -472,7 +482,7 @@
                         <p>Players: <strong>${count}</strong></p>
                         <p>Record: ${t.wins}W - ${t.losses}L</p>
                         <p><span class="badge ${ready ? "ready" : "waiting"}">${ready ? "Ready" : "Needs players"}</span></p>
-                        <button class="btn btn-red btn-small admin-only" onclick="removeTeam(${i})">Delete</button>
+                        <button class="btn btn-red btn-small admin-only" onclick="removeTeam(${t.id})">Delete</button>
                     </div>`;
             });
             if (teamCards === "") teamCards = `<p class="empty">No teams yet. Add one above!</p>`;
@@ -495,8 +505,8 @@
                         <td>${t.losses}</td>
                         <td><strong>${t.wins * 3}</strong></td>
                         <td class="admin-only">
-                            <button class="btn btn-small" onclick="recordResult(${item.index}, 'win')">+ Win</button>
-                            <button class="btn btn-red btn-small" onclick="recordResult(${item.index}, 'loss')">+ Loss</button>
+                            <button class="btn btn-small" onclick="recordResult(${item.team.id}, 'win')">+ Win</button>
+                            <button class="btn btn-red btn-small" onclick="recordResult(${item.team.id}, 'loss')">+ Loss</button>
                         </td>
                     </tr>`;
             });
@@ -569,20 +579,16 @@
         }
 
         // ---------- 9. Reset ----------
-        function resetData() {
+        async function resetData() {
             if (!isAdmin()) return;   // only the admin can do this
-            if (confirm("This will delete all your data and restore the demo teams. Continue?")) {
-                localStorage.removeItem("smiTeams");
-                localStorage.removeItem("smiPlayers");
-                location.reload();
+            if (confirm("This deletes ALL players and teams for everyone and restores the demo teams. Continue?")) {
+                await api("POST", "/api/reset");
+                loadData();
             }
         }
 
-        // ---------- 10. Login (demo only) ----------
-        // NOTE: This is a demo login. Anyone can read these in the browser, so it is not real security.
-        const ADMIN_USER = "shinji ikari";
-        const ADMIN_PASS = "misato97";
-
+        // ---------- 10. Login ----------
+        // The admin password is checked on the SERVER (see server.js). It is no longer written in this file.
         let role = sessionStorage.getItem("smiRole") || "";   // "admin", "player" or "" (not logged in)
 
         function isAdmin() {
@@ -596,41 +602,54 @@
             document.getElementById("roleText").textContent = (role === "admin") ? "Admin" : "Player";
         }
 
-        function startSession(newRole) {
+        function startSession(newRole, token) {
             role = newRole;
             sessionStorage.setItem("smiRole", role);
+            sessionStorage.setItem("smiToken", token || "");   // the admin "ticket" given by the server
             document.getElementById("loginUser").value = "";
             document.getElementById("loginPass").value = "";
             document.getElementById("loginError").textContent = "";
-            showSection("home");
             applyRole();
+            showSection("home");
         }
 
-        function loginAdmin() {
-            const user = document.getElementById("loginUser").value.trim().toLowerCase();
+        async function loginAdmin() {
+            const user = document.getElementById("loginUser").value;
             const pass = document.getElementById("loginPass").value;
 
-            if (user === ADMIN_USER && pass === ADMIN_PASS) {
-                startSession("admin");
-            } else {
-                document.getElementById("loginError").textContent = "Wrong username or password!";
+            try {
+                const response = await fetch("/api/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ username: user, password: pass })
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    startSession("admin", data.token);
+                } else {
+                    document.getElementById("loginError").textContent = data.error;
+                }
+            } catch (error) {
+                document.getElementById("loginError").textContent = "Cannot reach the server. Is it running?";
             }
         }
 
         function loginPlayer() {
-            startSession("player");
+            startSession("player", "");
         }
 
         function logout() {
             role = "";
             sessionStorage.removeItem("smiRole");
+            sessionStorage.removeItem("smiToken");
             applyRole();
         }
 
         // ---------- Start the app ----------
         fillSportDropdowns();
-        renderAll();
         applyRole();
+        loadData();
     </script>
 
 </body>
